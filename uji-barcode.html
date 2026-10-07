@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Barcode Uji Coba - Kasir IPB Press</title>
+  <style>
+    body { font-family: Inter, Arial, sans-serif; margin: 0; padding: 1.5rem; background: #f4f6fb; color: #1c2733; }
+    h1 { font-size: 1.3rem; margin: 0 0 0.3rem; }
+    p.info { margin: 0 0 1.25rem; color: #556; font-size: 0.9rem; max-width: 70ch; line-height: 1.5; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 1rem; }
+    .kartu { margin: 0; background: #fff; border: 1px solid #dde3ee; border-radius: 12px; padding: 0.9rem; text-align: center; break-inside: avoid; }
+    figcaption { display: flex; flex-direction: column; gap: 0.15rem; margin-bottom: 0.5rem; font-size: 0.85rem; }
+    figcaption span { color: #667; font-size: 0.75rem; }
+    .bc { width: 100%; height: auto; }
+    button { padding: 0.5rem 1rem; border: none; border-radius: 8px; background: #1e6fd9; color: #fff; font-weight: 600; cursor: pointer; margin-bottom: 1rem; }
+    @media print { button, p.info { display: none; } body { background: #fff; } }
+  </style>
+</head>
+<body>
+  <h1>Barcode uji coba (10 buku dummy)</h1>
+  <p class="info">Buka halaman ini di layar laptop, lalu arahkan kamera HP ke barcode lewat tombol <b>Scan Barcode</b> di halaman Kasir. Atau cetak halaman ini dan scan dengan scanner USB. Setiap barcode cocok dengan ISBN di data dummy (jalankan <code>isiDataDummy()</code> di Apps Script lebih dulu).</p>
+  <button onclick="window.print()">Cetak halaman ini</button>
+  <div class="grid">
+      <figure class="kartu">
+        <figcaption><strong>Dasar-Dasar Agronomi Tropika</strong><span>IPB Press &middot; Rp 85,000</span></figcaption>
+        <svg class="bc" data-isbn="9786239010003"></svg>
+      </figure>
+      <figure class="kartu">
+        <figcaption><strong>Budidaya Padi Ramah Lingkungan</strong><span>IPB Press &middot; Rp 72,000</span></figcaption>
+        <svg class="bc" data-isbn="9786239010379"></svg>
+      </figure>
+      <figure class="kartu">
+        <figcaption><strong>Pengantar Ilmu Tanah</strong><span>IPB Press &middot; Rp 90,000</span></figcaption>
+        <svg class="bc" data-isbn="9786239010744"></svg>
+      </figure>
+      <figure class="kartu">
+        <figcaption><strong>Bioteknologi Pertanian Modern</strong><span>IPB Press &middot; Rp 110,000</span></figcaption>
+        <svg class="bc" data-isbn="9786239011116"></svg>
+      </figure>
+      <figure class="kartu">
+        <figcaption><strong>Manajemen Agribisnis Berkelanjutan</strong><span>IPB Press &middot; Rp 95,000</span></figcaption>
+        <svg class="bc" data-isbn="9786239011482"></svg>
+      </figure>
+      <figure class="kartu">
+        <figcaption><strong>Ekologi Hutan Tropis Indonesia</strong><span>IPB Press &middot; Rp 120,000</span></figcaption>
+        <svg class="bc" data-isbn="9786239011857"></svg>
+      </figure>
+      <figure class="kartu">
+        <figcaption><strong>Teknologi Pascapanen Hortikultura</strong><span>Pustaka Nusantara &middot; Rp 78,000</span></figcaption>
+        <svg class="bc" data-isbn="9786239012229"></svg>
+      </figure>
+      <figure class="kartu">
+        <figcaption><strong>Statistika untuk Ilmu Hayati</strong><span>IPB Press &middot; Rp 88,000</span></figcaption>
+        <svg class="bc" data-isbn="9786239012595"></svg>
+      </figure>
+      <figure class="kartu">
+        <figcaption><strong>Kisah dari Kampus Hujan</strong><span>Mitra Literasi &middot; Rp 65,000</span></figcaption>
+        <svg class="bc" data-isbn="9786239012960"></svg>
+      </figure>
+      <figure class="kartu">
+        <figcaption><strong>Gizi dan Pangan Lokal Nusantara</strong><span>Mitra Literasi &middot; Rp 99,000</span></figcaption>
+        <svg class="bc" data-isbn="9786239013332"></svg>
+      </figure>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
+  <script>
+    document.querySelectorAll('svg.bc').forEach(function (el) {
+      JsBarcode(el, el.dataset.isbn, { format: 'EAN13', width: 2, height: 70, fontSize: 14, margin: 6 });
+    });
+  </script>
+</body>
+</html>

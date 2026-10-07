@@ -1,0 +1,11 @@
+Folder ini untuk foto latar halaman login (opsional tapi disarankan).
+
+Langkah:
+1. Buka https://unsplash.com/photos/a-book-shelf-filled-with-lots-of-books-ZDywUJ1_Zt0
+2. Klik "Download free" (lisensi Unsplash: gratis untuk penggunaan komersial).
+3. Ubah nama file menjadi  login-bg.jpg  lalu taruh di folder ini (img/).
+4. Jalankan: git add .  ->  git commit -m "Tambah foto login"  ->  git push
+
+Jika file login-bg.jpg tidak ada, halaman login mencoba memuat foto yang sama langsung
+dari Unsplash, dan bila itu juga gagal akan memakai latar gradien biru.
+Boleh diganti foto lain: cukup simpan dengan nama yang sama (login-bg.jpg).
