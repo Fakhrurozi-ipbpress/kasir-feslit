@@ -33,6 +33,7 @@ function showLogin() {
   document.getElementById('loadingOverlay').style.display = 'none';
   document.getElementById('appWrapper').style.display = 'none';
   document.getElementById('loginPage').style.display = 'flex';
+  warmUpServer('pub');   // bangunkan server selagi pengguna mengetik email/password
 }
 
 function showApp() {
@@ -45,7 +46,9 @@ function showApp() {
   document.body.classList.toggle('role-kasir', currentUser.Role !== 'Admin');
 
   loadPeriodeFeslitCache();
+  muatProdukKeCache();        // prefetch produk: halaman Kasir langsung terbuka
   navigateTo('dashboard');
+  prefetchMenuSekunder();     // Transaksi/Keuangan/Laporan dimuat saat browser menganggur
   hideLoadingOverlay();
 }
 
@@ -67,6 +70,7 @@ function handleLogin(event) {
       if (res.success) {
         currentUser = res.data;
         sessionStorage.setItem('currentUser', JSON.stringify(currentUser));
+        if (res.boot) seedDariBoot(res.boot);   // data awal ikut respons login
         showApp();
       } else {
         errBox.textContent = res.message;
@@ -79,7 +83,7 @@ function handleLogin(event) {
       errBox.textContent = 'Terjadi kesalahan: ' + err.message;
       errBox.style.display = 'block';
     })
-    .loginUser(email, password);
+    .loginUser(email, password, 'boot');
 
   return false;
 }
@@ -89,6 +93,8 @@ function handleLogout() {
   sessionStorage.removeItem('currentUser');
   currentUser = null;
   cart = [];
+  swrPurge();
+  setProdukCache([]);
   document.getElementById('loginForm').reset();
   showLogin();
 }
@@ -210,8 +216,10 @@ function formatRupiah(n) {
   const rounded = Math.round(Number(n) || 0);
   return 'Rp ' + rounded.toLocaleString('id-ID', { maximumFractionDigits: 0, minimumFractionDigits: 0 });
 }
-function formatTanggal(d) { return new Date(d).toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' }); }
-function formatTanggalJam(d) { return new Date(d).toLocaleString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }); }
+const _fmtTgl = new Intl.DateTimeFormat('id-ID', { day: '2-digit', month: 'short', year: 'numeric' });
+function formatTanggal(d) { return _fmtTgl.format(new Date(d)); }
+const _fmtTglJam = new Intl.DateTimeFormat('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+function formatTanggalJam(d) { return _fmtTglJam.format(new Date(d)); }
 
 // ════════════════════════════════════════════════════════
 // BAGIAN 5: DASHBOARD
@@ -221,19 +229,16 @@ let dashboardFeslitTerpilih = ''; // '' = Semua Periode
 
 function loadDashboard(idFeslit) {
   if (idFeslit !== undefined) dashboardFeslitTerpilih = idFeslit;
-  showLoading('section-dashboard');
-  GAS.run
-    .withSuccessHandler(renderDashboard)
-    .withFailureHandler(err => {
+  swr('dash:' + dashboardFeslitTerpilih, 'getDashboardData', [dashboardFeslitTerpilih], renderDashboard,
+    msg => {
       document.getElementById('section-dashboard').innerHTML = `
         <div class="page-header"><h2>Dashboard</h2></div>
         <div class="alert alert-danger">
-          <strong>Terjadi kesalahan server:</strong> ${err.message}
+          <strong>Terjadi kesalahan server:</strong> ${esc(msg)}
           <div class="mt-2"><button class="btn btn-sm btn-outline-danger" onclick="loadDashboard()"><i class="bi bi-arrow-clockwise"></i> Coba Lagi</button></div>
         </div>
       `;
-    })
-    .getDashboardData(dashboardFeslitTerpilih);
+    }, { maxAge: 20000, loadingId: 'section-dashboard' });
 }
 
 function renderDashboard(response) {
@@ -372,7 +377,8 @@ function renderPenjualanHarianChart(penjualanPerHari) {
       },
       scales: {
         x: { ticks: { color: isDark ? '#e6ecf5' : '#1c2733' }, grid: { display: false } },
-        y: { ticks: { color: isDark ? '#e6ecf5' : '#1c2733', callback: v => formatCompactRupiah(v) }, grid: { color: isDark ? '#26334a' : '#e2e8f0' } }
+        // Sumbu Y selalu mulai dari 0 (bukan dari nilai terkecil) agar naik-turun penjualan tidak tampak berlebihan
+        y: { beginAtZero: true, min: 0, ticks: { color: isDark ? '#e6ecf5' : '#1c2733', callback: v => formatCompactRupiah(v) }, grid: { color: isDark ? '#26334a' : '#e2e8f0' } }
       }
     }
   });
@@ -517,7 +523,7 @@ function loadKasirPage() {
           </div>
 
           <label class="form-label small fw-semibold">JUMLAH BAYAR</label>
-          <input type="number" class="form-control mb-2" id="jumlahBayarInput" placeholder="0" oninput="renderCart()">
+          <input type="number" class="form-control mb-2" id="jumlahBayarInput" placeholder="0" oninput="updateCartTotals()">
           <div class="d-flex justify-content-between mb-3 small text-secondary"><span>Kembalian</span><span id="kembalianDisplay">Rp 0</span></div>
 
           <div class="mb-2">
@@ -525,12 +531,13 @@ function loadKasirPage() {
             <select class="form-select form-select-sm" id="feslitAktifSelect"></select>
           </div>
 
-          <button class="btn btn-accent w-100 py-2" onclick="prosesCheckout()"><i class="bi bi-check-circle"></i> Simpan & Cetak Struk</button>
+          <button class="btn btn-accent w-100 py-2" id="btnCheckout" onclick="prosesCheckout()"><i class="bi bi-check-circle"></i> Simpan & Cetak Struk</button>
         </div>
       </div>
     </div>
   `;
   populateFeslitDropdownForKasir();
+  document.getElementById('produkGridContainer').addEventListener('click', onProdukGridClick);
   muatProdukKeCache();
   aktifkanScannerFisik();
 }
@@ -542,40 +549,37 @@ function loadKasirPage() {
  * Server sendiri sudah memakai CacheService agar panggilan pertama pun cepat.
  */
 function muatProdukKeCache(callback) {
-  document.getElementById('produkGridContainer').innerHTML = `<div class="text-center py-5 w-100"><div class="spinner-border text-primary"></div></div>`;
-  GAS.run
-    .withSuccessHandler(res => {
-      produkCache = res.success ? res.data : [];
-      renderProdukGrid(produkCache);
-      if (callback) callback();
-    })
-    .withFailureHandler(err => showToast('Error', err.message, 'danger'))
-    .getAllProdukCached();
+  swr('produk', 'getAllProdukCached', [], res => {
+    setProdukCache(res.data || []);
+    jalankanCariProduk();
+    if (callback) callback();
+  }, msg => showToast('Error', msg, 'danger'), { maxAge: 60000, loadingId: 'produkGridContainer' });
 }
 
-function handleProdukSearch() {
-  // Filter dilakukan langsung di browser dari produkCache — instan, tanpa delay/server call
-  const kw = document.getElementById('produkSearchInput').value.toLowerCase();
-  const filtered = !kw ? produkCache : produkCache.filter(p =>
-    String(p.Judul).toLowerCase().includes(kw) ||
-    String(p.ISBN).toLowerCase().includes(kw) ||
-    String(p.Penerbit).toLowerCase().includes(kw));
-  renderProdukGrid(filtered);
+function handleProdukSearch(segera) {
+  // Debounce 90 ms: mengetik cepat tidak membuat grid digambar ulang di setiap huruf
+  clearTimeout(produkSearchTimer);
+  if (segera === true) return jalankanCariProduk();
+  produkSearchTimer = setTimeout(jalankanCariProduk, 90);
 }
 
-function renderProdukGrid(produkList) {
+function renderProdukGrid(produkList, tampil) {
   const container = document.getElementById('produkGridContainer');
   if (!container) return;
-  let html = produkList.map(p => `
-    <div class="produk-card" onclick='tambahKeKeranjang(${JSON.stringify(p).replace(/'/g, "&apos;")})'>
-      <div class="produk-cover" style="--h:${coverHue(p.Judul)}"><i class="bi ${p.JenisProduk === 'Non Buku' ? 'bi-bag-heart' : 'bi-book-half'}"></i><span>${(p.Judul || '?').trim().charAt(0).toUpperCase()}</span></div>
-      <div class="produk-title">${p.Judul}</div>
+  produkFiltered = produkList;
+  produkShown = Math.min(produkList.length, tampil || PRODUK_PAGE);   // hanya gambar sebagian: ringan walau katalog ribuan
+  let html = produkList.slice(0, produkShown).map(p => `
+    <div class="produk-card" data-id="${esc(p.id_produk)}">
+      <div class="produk-cover" style="--h:${coverHue(p.Judul)}"><i class="bi ${p.JenisProduk === 'Non Buku' ? 'bi-bag-heart' : 'bi-book-half'}"></i><span>${esc(String(p.Judul || '?').trim().charAt(0).toUpperCase())}</span></div>
+      <div class="produk-title">${esc(p.Judul)}</div>
       <div class="produk-price">${formatRupiah(p.Harga)}</div>
-      <div class="produk-meta">${p.Penerbit || '-'} · <span class="badge ${p.JenisProduk === 'Non Buku' ? 'badge-nonpos' : 'badge-pos'}">${p.JenisProduk || 'Buku'}</span></div>
-    </div>
-  `).join('');
+      <div class="produk-meta">${esc(p.Penerbit || '-')} · <span class="badge ${p.JenisProduk === 'Non Buku' ? 'badge-nonpos' : 'badge-pos'}">${esc(p.JenisProduk || 'Buku')}</span></div>
+    </div>`).join('');
+  if (produkList.length > produkShown) {
+    html += `<div class="produk-card produk-card-add" data-more="1"><i class="bi bi-chevron-double-down fs-3"></i><span class="small">Tampilkan lebih banyak<br>(${produkList.length - produkShown} lagi)</span></div>`;
+  }
   html += `
-    <div class="produk-card produk-card-add" onclick="openTambahProdukCepat()">
+    <div class="produk-card produk-card-add" data-add="1">
       <i class="bi bi-plus-circle fs-3"></i>
       <span class="small">Tambah Produk Baru</span>
     </div>`;
@@ -653,21 +657,22 @@ function setPaymentMethod(method, btn) {
   btn.classList.add('active');
 }
 
-function renderCart() {
+function renderCart() { renderCartItems(); updateCartTotals(); }
+
+function renderCartItems() {
   const container = document.getElementById('cartItemsContainer');
   const countBadge = document.getElementById('cartCountBadge');
   if (!container) return;
-
   countBadge.textContent = cart.reduce((s, i) => s + i.qty, 0);
-
   if (cart.length === 0) {
     container.innerHTML = `<div class="cart-empty"><i class="bi bi-cart"></i><p class="mb-0 mt-2">Keranjang kosong</p></div>`;
-  } else {
-    container.innerHTML = cart.map(item => `
+    return;
+  }
+  container.innerHTML = cart.map(item => `
       <div class="cart-item-card">
         <div class="cart-item-header">
-          <div class="cart-item-title">${item.Judul}</div>
-          <button onclick="hapusDariKeranjang('${item.id_produk}')" class="cart-item-remove" title="Hapus"><i class="bi bi-trash"></i></button>
+          <div class="cart-item-title">${esc(item.Judul)}</div>
+          <button onclick="hapusDariKeranjang('${esc(item.id_produk)}')" class="cart-item-remove" title="Hapus"><i class="bi bi-trash"></i></button>
         </div>
         <div class="cart-item-rekom">Harga rekomendasi: ${formatRupiah(item.HargaAsli)}</div>
         <div class="cart-item-controls">
@@ -675,31 +680,34 @@ function renderCart() {
             <label>Bayar</label>
             <div class="input-group input-group-sm">
               <span class="input-group-text">Rp</span>
-              <input type="number" class="form-control" min="0" value="${item.Harga}" onchange="ubahHargaItem('${item.id_produk}', this.value)">
+              <input type="number" class="form-control" min="0" inputmode="numeric" value="${item.Harga}" onchange="ubahHargaItem('${esc(item.id_produk)}', this.value)">
             </div>
           </div>
           <div class="qty-control">
-            <button onclick="ubahQty('${item.id_produk}', -1)">−</button>
+            <button onclick="ubahQty('${esc(item.id_produk)}', -1)">−</button>
             <span>${item.qty}</span>
-            <button onclick="ubahQty('${item.id_produk}', 1)">+</button>
+            <button onclick="ubahQty('${esc(item.id_produk)}', 1)">+</button>
           </div>
         </div>
         <div class="cart-item-subtotal">Subtotal: <strong>${formatRupiah(item.Harga * item.qty)}</strong></div>
       </div>
     `).join('');
-  }
+}
 
+/** Hanya angka total/kembalian — dipanggil di setiap ketikan "Jumlah Bayar" tanpa membangun ulang keranjang. */
+function updateCartTotals() {
   const subtotal = Math.round(cart.reduce((s, i) => s + (i.HargaAsli * i.qty), 0));
   const total = Math.round(cart.reduce((s, i) => s + (i.Harga * i.qty), 0));
   const nominalDiskon = subtotal - total;
   const diskonPersen = subtotal > 0 ? (nominalDiskon / subtotal * 100) : 0;
-  const jumlahBayar = Math.round(Number(document.getElementById('jumlahBayarInput')?.value) || 0);
+  const bayarEl = document.getElementById('jumlahBayarInput');
+  const jumlahBayar = Math.round(Number(bayarEl ? bayarEl.value : 0) || 0);
   const kembalian = jumlahBayar - total;
-
-  document.getElementById('cartSubtotal').textContent = formatRupiah(subtotal);
-  document.getElementById('diskonOtomatisDisplay').textContent = `${formatRupiah(nominalDiskon)} (${diskonPersen.toFixed(1)}%)`;
-  document.getElementById('cartTotal').textContent = formatRupiah(total);
-  document.getElementById('kembalianDisplay').textContent = formatRupiah(kembalian > 0 ? kembalian : 0);
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  set('cartSubtotal', formatRupiah(subtotal));
+  set('diskonOtomatisDisplay', `${formatRupiah(nominalDiskon)} (${diskonPersen.toFixed(1)}%)`);
+  set('cartTotal', formatRupiah(total));
+  set('kembalianDisplay', formatRupiah(kembalian > 0 ? kembalian : 0));
 }
 
 function populateFeslitDropdownForKasir() {
@@ -709,10 +717,10 @@ function populateFeslitDropdownForKasir() {
 }
 
 function loadPeriodeFeslitCache() {
-  GAS.run
-    .withSuccessHandler(res => { if (res.success) periodeAktifList = res.data; })
-    .withFailureHandler(() => {})
-    .getAllData('Periode_Feslit');
+  swr('periode', 'getAllData', ['Periode_Feslit'], res => {
+    periodeAktifList = res.data || [];
+    populateFeslitDropdownForKasir();
+  }, null, { maxAge: 60000 });
 }
 
 function submitProdukForm(event) {
@@ -749,11 +757,12 @@ function submitProdukForm(event) {
 }
 
 function prosesCheckout() {
+  if (sedangSimpan) return;                       // anti klik ganda = anti transaksi ganda
   if (cart.length === 0) { showToast('Peringatan', 'Keranjang masih kosong.', 'warning'); return; }
 
   const idFeslit = document.getElementById('feslitAktifSelect').value;
   const payload = {
-    items: cart, // setiap item sudah membawa HargaAsli (rekomendasi) & Harga (dibayar)
+    items: cart.map(i => Object.assign({}, i)),   // salinan: perubahan keranjang tidak memengaruhi permintaan
     pembayaran: currentPaymentMethod,
     jenisTransaksi: currentJenisTransaksi,
     kasirNama: currentUser.Nama,
@@ -761,8 +770,13 @@ function prosesCheckout() {
     jumlahBayar: Number(document.getElementById('jumlahBayarInput').value) || 0
   };
 
+  sedangSimpan = true;
+  setCheckoutBusy(true);
+  tampilkanStruk(hitungStrukLokal(payload));      // respons visual instan; ID menyusul dari server
+
   GAS.run
     .withSuccessHandler(res => {
+      sedangSimpan = false; setCheckoutBusy(false);
       if (res.success) {
         showToast('Berhasil', 'Transaksi tersimpan: ' + res.data.idTransaksi, 'success');
         lastStrukData = res.data;
@@ -771,10 +785,15 @@ function prosesCheckout() {
         document.getElementById('jumlahBayarInput').value = '';
         renderCart();
       } else {
+        tampilkanStrukGagal(res.message);
         showToast('Gagal', res.message, 'danger');
       }
     })
-    .withFailureHandler(err => showToast('Error', err.message, 'danger'))
+    .withFailureHandler(err => {
+      sedangSimpan = false; setCheckoutBusy(false);
+      tampilkanStrukGagal(err.message);
+      showToast('Error', err.message, 'danger');
+    })
     .simpanTransaksi(payload);
 }
 
@@ -784,6 +803,7 @@ function prosesCheckout() {
 
 function tampilkanStruk(data) {
   const content = document.getElementById('previewContent');
+  const idHtml = data._pending ? '<span class="pending-dots">menyimpan</span>' : esc(data.idTransaksi);
   content.innerHTML = `
     <div class="struk-box">
       <div class="text-center mb-2">
@@ -792,11 +812,11 @@ function tampilkanStruk(data) {
         <span class="small">${formatTanggalJam(data.tanggal)}</span>
       </div>
       <hr>
-      <div class="struk-row"><span>ID Transaksi</span><span>${data.idTransaksi}</span></div>
-      <div class="struk-row"><span>Kasir</span><span>${data.kasirNama}</span></div>
+      <div class="struk-row"><span>ID Transaksi</span><span>${idHtml}</span></div>
+      <div class="struk-row"><span>Kasir</span><span>${esc(data.kasirNama)}</span></div>
       <hr>
       ${data.items.map(it => `
-        <div class="struk-row"><span>${it.Judul}</span></div>
+        <div class="struk-row"><span>${esc(it.Judul)}</span></div>
         <div class="struk-row"><span>${it.qty} x ${formatRupiah(it.Harga)}</span><span>${formatRupiah(it.Harga * it.qty)}</span></div>
         ${it.Harga !== it.HargaAsli ? `<div class="struk-row small text-secondary"><span>(rekomendasi ${formatRupiah(it.HargaAsli)})</span></div>` : ''}
       `).join('')}
@@ -805,15 +825,17 @@ function tampilkanStruk(data) {
       <div class="struk-row"><span>Diskon (${data.diskonPersen}%)</span><span>-${formatRupiah(data.nominalDiskon)}</span></div>
       <div class="struk-row"><strong>TOTAL</strong><strong>${formatRupiah(data.netto)}</strong></div>
       <hr>
-      <div class="struk-row"><span>Metode</span><span>${data.pembayaran}</span></div>
+      <div class="struk-row"><span>Metode</span><span>${esc(data.pembayaran)}</span></div>
       <div class="struk-row"><span>Bayar</span><span>${formatRupiah(data.jumlahBayar)}</span></div>
       <div class="struk-row"><span>Kembalian</span><span>${formatRupiah(data.kembalian)}</span></div>
       <hr>
       <div class="text-center small">Terima kasih atas kunjungan Anda!</div>
     </div>
   `;
-  document.getElementById('previewModalTitle').textContent = 'Struk Transaksi';
-  new bootstrap.Modal(document.getElementById('previewModal')).show();
+  const pb = document.getElementById('btnCetakStruk');
+  if (pb) pb.disabled = !!data._pending;          // cetak hanya setelah ID transaksi resmi ada
+  document.getElementById('previewModalTitle').textContent = data._pending ? 'Menyimpan Transaksi...' : 'Struk Transaksi';
+  bootstrap.Modal.getOrCreateInstance(document.getElementById('previewModal')).show();
 }
 
 function printStruk() {
@@ -839,7 +861,7 @@ function loadKatalogPage() {
       <h2>Katalog Buku</h2>
       <button class="btn btn-accent" onclick="openTambahProduk()"><i class="bi bi-plus-lg"></i> Tambah Produk</button>
     </div>
-    <div class="mb-3"><input type="text" class="form-control" id="katalogSearchInput" placeholder="🔍 Cari judul, ISBN, atau penerbit..." oninput="loadKatalogTable()"></div>
+    <div class="mb-3"><input type="text" class="form-control" id="katalogSearchInput" placeholder="🔍 Cari judul, ISBN, atau penerbit..." oninput="filterKatalogLokal()"></div>
     <div id="katalogTableContainer" class="table-responsive"></div>
   `;
   loadKatalogTable();
@@ -870,39 +892,36 @@ function editProduk(produk) {
 }
 
 function loadKatalogTable() {
-  showLoading('katalogTableContainer');
-  const kw = (document.getElementById('katalogSearchInput')?.value || '');
-  GAS.run
-    .withSuccessHandler(res => {
-      if (res.success) renderKatalogTable(res.data, kw);
-      else showErrorInContainer('katalogTableContainer', res.message, 'loadKatalogTable');
-    })
-    .withFailureHandler(err => showErrorInContainer('katalogTableContainer', err.message, 'loadKatalogTable'))
-    .getAllData('Produk');
+  swr('produk', 'getAllProdukCached', [], res => {
+    katalogData = res.data || [];
+    terapkanFilterKatalog();
+  }, msg => showErrorInContainer('katalogTableContainer', msg, 'loadKatalogTable'), { maxAge: 30000, loadingId: 'katalogTableContainer' });
 }
 
-function renderKatalogTable(data, kw) {
+function renderKatalogTable(data, tampil) {
   try {
-    const filtered = data.filter(p => !kw || `${p.Judul} ${p.ISBN} ${p.Penerbit}`.toLowerCase().includes(kw.toLowerCase()));
+    katalogShown = Math.min(data.length, tampil || KATALOG_PAGE);
     const container = document.getElementById('katalogTableContainer');
+    if (!container) return;
+    const rows = data.slice(0, katalogShown).map((p, i) => `
+            <tr>
+              <td><span class="badge ${p.JenisProduk === 'Non Buku' ? 'badge-nonpos' : 'badge-pos'}">${esc(p.JenisProduk || 'Buku')}</span></td>
+              <td>${esc(p.ISBN || '-')}</td>
+              <td>${esc(p.Judul)}</td>
+              <td>${formatRupiah(p.Harga)}</td>
+              <td>${esc(p.Penerbit || '-')}</td>
+              <td>
+                <button class="btn btn-sm btn-outline-accent me-1" onclick="editProdukIdx(${i})"><i class="bi bi-pencil"></i></button>
+                <button class="btn btn-sm btn-outline-danger" onclick="confirmDelete('${esc(p.ID)}', 'Produk', loadKatalogTable)"><i class="bi bi-trash"></i></button>
+              </td>
+            </tr>`).join('');
+    const lagi = data.length > katalogShown
+      ? `<tr><td colspan="6" class="text-center py-3"><button class="btn btn-sm btn-outline-accent" onclick="tampilkanLebihKatalog()">Tampilkan ${Math.min(KATALOG_PAGE, data.length - katalogShown)} lagi (${data.length - katalogShown} tersisa)</button></td></tr>` : '';
     container.innerHTML = `
+      <div class="small text-secondary mb-2">${data.length} produk</div>
       <table class="table">
         <thead><tr><th>Jenis</th><th>ISBN</th><th>Judul</th><th>Harga</th><th>Penerbit</th><th>Aksi</th></tr></thead>
-        <tbody>
-          ${filtered.map(p => `
-            <tr>
-              <td><span class="badge ${p.JenisProduk === 'Non Buku' ? 'badge-nonpos' : 'badge-pos'}">${p.JenisProduk || 'Buku'}</span></td>
-              <td>${p.ISBN || '-'}</td>
-              <td>${p.Judul}</td>
-              <td>${formatRupiah(p.Harga)}</td>
-              <td>${p.Penerbit || '-'}</td>
-              <td>
-                <button class="btn btn-sm btn-outline-accent me-1" onclick='editProduk(${JSON.stringify(p).replace(/'/g, "&apos;")})'><i class="bi bi-pencil"></i></button>
-                <button class="btn btn-sm btn-outline-danger" onclick="confirmDelete('${p.ID}', 'Produk', loadKatalogTable)"><i class="bi bi-trash"></i></button>
-              </td>
-            </tr>
-          `).join('') || '<tr><td colspan="6" class="text-center py-4 text-secondary">Belum ada data produk.</td></tr>'}
-        </tbody>
+        <tbody>${rows || '<tr><td colspan="6" class="text-center py-4 text-secondary">Belum ada data produk.</td></tr>'}${lagi}</tbody>
       </table>
     `;
   } catch (err) {
@@ -923,10 +942,10 @@ function loadTransaksiPage() {
       ${isAdmin ? `<button class="btn btn-accent" onclick="openTambahTransaksiManual()"><i class="bi bi-plus-lg"></i> Tambah Transaksi</button>` : ''}
     </div>
     <div class="row g-2 mb-3">
-      <div class="col-6 col-md-3"><input type="text" class="form-control" id="trxSearchInput" placeholder="Cari ID Transaksi..." oninput="loadTransaksiTable()"></div>
-      <div class="col-6 col-md-3"><select class="form-select" id="trxPembayaranFilter" onchange="loadTransaksiTable()"><option value="">Semua Pembayaran</option><option>Cash</option><option>QRIS</option><option>EDC</option></select></div>
-      <div class="col-6 col-md-3"><input type="date" class="form-control" id="trxTanggalMulai" onchange="loadTransaksiTable()"></div>
-      <div class="col-6 col-md-3"><input type="date" class="form-control" id="trxTanggalSelesai" onchange="loadTransaksiTable()"></div>
+      <div class="col-6 col-md-3"><input type="text" class="form-control" id="trxSearchInput" placeholder="Cari ID Transaksi..." oninput="filterTransaksiLokal()"></div>
+      <div class="col-6 col-md-3"><select class="form-select" id="trxPembayaranFilter" onchange="filterTransaksiLokal(true)"><option value="">Semua Pembayaran</option><option>Cash</option><option>QRIS</option><option>EDC</option></select></div>
+      <div class="col-6 col-md-3"><input type="date" class="form-control" id="trxTanggalMulai" onchange="filterTransaksiLokal(true)"></div>
+      <div class="col-6 col-md-3"><input type="date" class="form-control" id="trxTanggalSelesai" onchange="filterTransaksiLokal(true)"></div>
     </div>
     <div id="trxTableContainer" class="table-responsive"></div>
   `;
@@ -934,50 +953,43 @@ function loadTransaksiPage() {
 }
 
 function loadTransaksiTable() {
-  showLoading('trxTableContainer');
-  const filter = {
-    search: document.getElementById('trxSearchInput')?.value,
-    pembayaran: document.getElementById('trxPembayaranFilter')?.value,
-    tanggalMulai: document.getElementById('trxTanggalMulai')?.value,
-    tanggalSelesai: document.getElementById('trxTanggalSelesai')?.value
-  };
-  GAS.run
-    .withSuccessHandler(res => {
-      if (res.success) renderTransaksiTable(res.data);
-      else showErrorInContainer('trxTableContainer', res.message, 'loadTransaksiTable');
-    })
-    .withFailureHandler(err => showErrorInContainer('trxTableContainer', err.message, 'loadTransaksiTable'))
-    .getRiwayatTransaksi(filter);
+  swr('trx:all', 'getRiwayatTransaksi', [{}], res => {
+    trxData = res.data || [];
+    terapkanFilterTrx();
+  }, msg => showErrorInContainer('trxTableContainer', msg, 'loadTransaksiTable'), { maxAge: 20000, loadingId: 'trxTableContainer' });
 }
 
-function renderTransaksiTable(data) {
+function renderTransaksiTable(data, tampil) {
   try {
     const isAdmin = currentUser.Role === 'Admin';
+    trxShown = Math.min(data.length, tampil || TRX_PAGE);
     const container = document.getElementById('trxTableContainer');
-    container.innerHTML = `
-      <table class="table">
-        <thead><tr><th>ID Transaksi</th><th>Tanggal</th><th>Kasir</th><th>Periode Feslit</th><th>Jenis</th><th>Qty</th><th>Total</th><th>Diskon</th><th>Aksi</th></tr></thead>
-        <tbody>
-          ${data.map(t => `
+    if (!container) return;
+    const rows = data.slice(0, trxShown).map((t, i) => `
             <tr>
-              <td>${t.id_transaksi}</td>
+              <td>${esc(t.id_transaksi)}</td>
               <td>${formatTanggalJam(t.Tanggal)}</td>
-              <td>${t.Kasir}</td>
-              <td>${t.PeriodeFeslitNama || '-'}</td>
-              <td><span class="badge ${t.JenisTransaksi === 'POS' ? 'badge-pos' : 'badge-nonpos'}">${t.JenisTransaksi}</span></td>
+              <td>${esc(t.Kasir)}</td>
+              <td>${esc(t.PeriodeFeslitNama || '-')}</td>
+              <td><span class="badge ${t.JenisTransaksi === 'POS' ? 'badge-pos' : 'badge-nonpos'}">${esc(t.JenisTransaksi)}</span></td>
               <td>${t.qty}</td>
               <td>${formatRupiah(t.Netto)}</td>
               <td>${t.Diskon}%</td>
               <td>
-                <button class="btn btn-sm btn-outline-accent me-1" onclick="lihatDetailTransaksi('${t.id_transaksi}')" title="Lihat Detail"><i class="bi bi-eye"></i></button>
+                <button class="btn btn-sm btn-outline-accent me-1" onclick="lihatDetailTransaksi('${esc(t.id_transaksi)}')" title="Lihat Detail"><i class="bi bi-eye"></i></button>
                 ${isAdmin ? `
-                  <button class="btn btn-sm btn-outline-accent me-1" onclick='openEditTransaksi(${JSON.stringify(t).replace(/'/g, "&apos;")})' title="Edit"><i class="bi bi-pencil"></i></button>
-                  <button class="btn btn-sm btn-outline-danger" onclick="confirmDeleteTransaksi('${t.id_transaksi}')" title="Hapus"><i class="bi bi-trash"></i></button>
+                  <button class="btn btn-sm btn-outline-accent me-1" onclick="editTrxIdx(${i})" title="Edit"><i class="bi bi-pencil"></i></button>
+                  <button class="btn btn-sm btn-outline-danger" onclick="confirmDeleteTransaksi('${esc(t.id_transaksi)}')" title="Hapus"><i class="bi bi-trash"></i></button>
                 ` : ''}
               </td>
-            </tr>
-          `).join('') || '<tr><td colspan="9" class="text-center py-4 text-secondary">Belum ada transaksi.</td></tr>'}
-        </tbody>
+            </tr>`).join('');
+    const lagi = data.length > trxShown
+      ? `<tr><td colspan="9" class="text-center py-3"><button class="btn btn-sm btn-outline-accent" onclick="tampilkanLebihTrx()">Tampilkan ${Math.min(TRX_PAGE, data.length - trxShown)} lagi (${data.length - trxShown} tersisa)</button></td></tr>` : '';
+    container.innerHTML = `
+      <div class="small text-secondary mb-2">${data.length} transaksi</div>
+      <table class="table">
+        <thead><tr><th>ID Transaksi</th><th>Tanggal</th><th>Kasir</th><th>Periode Feslit</th><th>Jenis</th><th>Qty</th><th>Total</th><th>Diskon</th><th>Aksi</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="9" class="text-center py-4 text-secondary">Belum ada transaksi.</td></tr>'}${lagi}</tbody>
       </table>
     `;
   } catch (err) {
@@ -988,22 +1000,20 @@ function renderTransaksiTable(data) {
 function lihatDetailTransaksi(idTransaksi) {
   document.getElementById('detailTrxTitle').textContent = 'Detail Transaksi - ' + idTransaksi;
   document.getElementById('detailTrxContent').innerHTML = `<div class="text-center py-4"><div class="spinner-border text-primary"></div></div>`;
-  new bootstrap.Modal(document.getElementById('detailTrxModal')).show();
-
-  GAS.run
-    .withSuccessHandler(res => {
-      const items = res.success ? res.data : [];
-      document.getElementById('detailTrxContent').innerHTML = `
+  bootstrap.Modal.getOrCreateInstance(document.getElementById('detailTrxModal')).show();
+  swr('det:' + idTransaksi, 'getDetailTransaksi', [idTransaksi], res => {
+    const items = res.success ? res.data : [];
+    document.getElementById('detailTrxContent').innerHTML = `
         <table class="table">
           <thead><tr><th>Judul</th><th>Penerbit</th><th>Harga Rekomendasi</th><th>Harga Dibayar</th><th>Qty</th><th>Total</th></tr></thead>
           <tbody>
-            ${items.map(i => `<tr><td>${i.Judul}</td><td>${i.Penerbit || '-'}</td><td>${formatRupiah(i.HargaAsli)}</td><td>${formatRupiah(i.Harga)}</td><td>${i.qty}</td><td>${formatRupiah(i.Total)}</td></tr>`).join('')}
+            ${items.map(i => `<tr><td>${esc(i.Judul)}</td><td>${esc(i.Penerbit || '-')}</td><td>${formatRupiah(i.HargaAsli)}</td><td>${formatRupiah(i.Harga)}</td><td>${i.qty}</td><td>${formatRupiah(i.Total)}</td></tr>`).join('')}
           </tbody>
         </table>
       `;
-    })
-    .withFailureHandler(err => showToast('Error', err.message, 'danger'))
-    .getDetailTransaksi(idTransaksi);
+  }, msg => {
+    document.getElementById('detailTrxContent').innerHTML = `<div class="alert alert-danger mb-0">${esc(msg)} <button class="btn btn-sm btn-outline-danger ms-2" onclick="lihatDetailTransaksi('${esc(idTransaksi)}')">Coba Lagi</button></div>`;
+  }, { maxAge: 3600000 });
 }
 
 // ════════════════════════════════════════════════════════
@@ -1220,14 +1230,8 @@ function confirmDeleteTransaksi(idTransaksi) {
 function loadKeuanganPage() {
   const container = document.getElementById('section-keuangan');
   container.innerHTML = `<div class="page-header"><h2>Keuangan</h2></div><div id="keuanganContent"></div>`;
-  showLoading('keuanganContent');
-  GAS.run
-    .withSuccessHandler(res => {
-      if (res.success) renderKeuangan(res.data);
-      else showErrorInContainer('keuanganContent', res.message, 'loadKeuanganPage');
-    })
-    .withFailureHandler(err => showErrorInContainer('keuanganContent', err.message, 'loadKeuanganPage'))
-    .getRiwayatTransaksi({});
+  swr('trx:all', 'getRiwayatTransaksi', [{}], res => renderKeuangan(res.data || []),
+    msg => showErrorInContainer('keuanganContent', msg, 'loadKeuanganPage'), { maxAge: 20000, loadingId: 'keuanganContent' });
 }
 
 function renderKeuangan(data) {
@@ -1279,8 +1283,8 @@ function loadLaporanPage() {
       </div>
     </div>
     <div class="row g-2 mb-3">
-      <div class="col-6 col-md-3"><input type="date" class="form-control" id="lapTanggalMulai" onchange="loadLaporanData()"></div>
-      <div class="col-6 col-md-3"><input type="date" class="form-control" id="lapTanggalSelesai" onchange="loadLaporanData()"></div>
+      <div class="col-6 col-md-3"><input type="date" class="form-control" id="lapTanggalMulai" onchange="muatLaporanDebounce()"></div>
+      <div class="col-6 col-md-3"><input type="date" class="form-control" id="lapTanggalSelesai" onchange="muatLaporanDebounce()"></div>
     </div>
     <div class="row g-3 mb-3">
       <div class="col-md-6"><div class="card p-3"><h6 class="mb-3">Top Produk Terlaris</h6><canvas id="chartLapProduk" height="220"></canvas></div></div>
@@ -1297,14 +1301,10 @@ function loadLaporanData() {
     tanggalMulai: document.getElementById('lapTanggalMulai')?.value,
     tanggalSelesai: document.getElementById('lapTanggalSelesai')?.value
   };
-  showLoading('lapTableContainer');
-  GAS.run
-    .withSuccessHandler(res => {
-      if (res.success) { lastLaporanData = res.data; renderLaporan(res.data); }
-      else showErrorInContainer('lapTableContainer', res.message, 'loadLaporanData');
-    })
-    .withFailureHandler(err => showErrorInContainer('lapTableContainer', err.message, 'loadLaporanData'))
-    .getLaporanData(filter);
+  swr('lap:' + JSON.stringify(filter), 'getLaporanData', [filter], res => {
+    lastLaporanData = res.data;
+    renderLaporan(res.data);
+  }, msg => showErrorInContainer('lapTableContainer', msg, 'loadLaporanData'), { maxAge: 30000, loadingId: 'lapTableContainer' });
 }
 
 function renderLaporan(data) {
@@ -1372,14 +1372,8 @@ function loadKasirUserPage() {
 }
 
 function loadKasirUserTable() {
-  showLoading('kasirUserTableContainer');
-  GAS.run
-    .withSuccessHandler(res => {
-      if (res.success) renderKasirUserTable(res.data);
-      else showErrorInContainer('kasirUserTableContainer', res.message, 'loadKasirUserTable');
-    })
-    .withFailureHandler(err => showErrorInContainer('kasirUserTableContainer', err.message, 'loadKasirUserTable'))
-    .getAllData('Kasir');
+  swr('kasirUser', 'getAllData', ['Kasir'], res => renderKasirUserTable(res.data || []),
+    msg => showErrorInContainer('kasirUserTableContainer', msg, 'loadKasirUserTable'), { maxAge: 30000, loadingId: 'kasirUserTableContainer' });
 }
 
 function renderKasirUserTable(data) {
@@ -1493,14 +1487,8 @@ function loadPengaturanPage() {
 }
 
 function loadFeslitTable() {
-  showLoading('feslitTableContainer');
-  GAS.run
-    .withSuccessHandler(res => {
-      if (res.success) renderFeslitTable(res.data);
-      else showErrorInContainer('feslitTableContainer', res.message, 'loadFeslitTable');
-    })
-    .withFailureHandler(err => showErrorInContainer('feslitTableContainer', err.message, 'loadFeslitTable'))
-    .getAllData('Periode_Feslit');
+  swr('periode:tbl', 'getAllData', ['Periode_Feslit'], res => renderFeslitTable(res.data || []),
+    msg => showErrorInContainer('feslitTableContainer', msg, 'loadFeslitTable'), { maxAge: 30000, loadingId: 'feslitTableContainer' });
 }
 
 function renderFeslitTable(data) {
@@ -1521,7 +1509,8 @@ function renderFeslitTable(data) {
         </tbody>
       </table>
     `;
-    loadPeriodeFeslitCache();
+    periodeAktifList = data;
+    populateFeslitDropdownForKasir();
   } catch (err) {
     showErrorInContainer('feslitTableContainer', 'Kesalahan saat menampilkan data: ' + err.message, 'loadFeslitTable');
   }
@@ -1584,16 +1573,10 @@ function submitFeslitForm(event) {
 }
 
 function loadAppSettingsForm() {
-  GAS.run
-    .withSuccessHandler(res => {
-      if (res.success) {
-        document.getElementById('cfgAppName').value = res.data.appName || '';
-        document.getElementById('cfgNamaPerusahaan').value = res.data.namaPerusahaan || '';
-        document.getElementById('cfgLogoUrl').value = res.data.logoUrl || '';
-      }
-    })
-    .withFailureHandler(() => {})
-    .getAllConfig();
+  swr('cfg', 'getAllConfig', [], res => {
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v || ''; };
+    set('cfgAppName', res.data.appName); set('cfgNamaPerusahaan', res.data.namaPerusahaan); set('cfgLogoUrl', res.data.logoUrl);
+  }, null, { maxAge: 60000 });
 }
 
 function submitAppSettings(event) {
@@ -1664,3 +1647,263 @@ function sesiBerakhir() {
   showToast('Sesi berakhir', 'Silakan login kembali.', 'warning');
   handleLogout();
 }
+
+
+// ════════════════════════════════════════════════════════
+// BAGIAN 16: TURBO v3 — tampil instan, tanpa tersendat
+//  - SWR: tampilkan data tersimpan LANGSUNG, perbarui di latar belakang
+//  - Pencarian/filter dilakukan di browser (tanpa panggilan server per ketikan)
+//  - Render ringan: batasi baris, event delegation, tanpa JSON di atribut HTML
+//  - Checkout optimistis + kunci anti klik ganda
+// ════════════════════════════════════════════════════════
+
+const SWR_PREFIX = 'kc3:';
+const swrMem = {};      // kunci -> { t, h, res }
+const swrSeq = {};      // kunci -> nomor permintaan terakhir (jawaban basi diabaikan)
+let swrEpoch = 0;       // naik tiap ada aksi tulis -> data sebelumnya dianggap basi
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function hashStr(s) {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36) + '_' + s.length;
+}
+function swrUserKey(key) {
+  return SWR_PREFIX + (currentUser ? (currentUser.id_kasir || currentUser.Email || 'u') : '-') + ':' + key;
+}
+function swrRead(key) {
+  if (swrMem[key]) return swrMem[key];
+  try {
+    const raw = sessionStorage.getItem(swrUserKey(key));   // sessionStorage: hilang saat tab ditutup (aman di PC bersama)
+    if (raw) { const o = JSON.parse(raw); swrMem[key] = o; return o; }
+  } catch (e) { /* abaikan */ }
+  return null;
+}
+function swrWrite(key, res, h) {
+  const o = { t: Date.now(), h: h, res: res };
+  swrMem[key] = o;
+  try { const s = JSON.stringify(o); if (s.length < 1500000) sessionStorage.setItem(swrUserKey(key), s); } catch (e) { /* penuh: memori tetap dipakai */ }
+}
+function swrDrop(prefix) {
+  Object.keys(swrMem).forEach(k => { if (k.indexOf(prefix) === 0) delete swrMem[k]; });
+  try {
+    const p = swrUserKey(prefix);
+    Object.keys(sessionStorage).forEach(k => { if (k.indexOf(p) === 0) sessionStorage.removeItem(k); });
+  } catch (e) { /* abaikan */ }
+}
+function swrPurge() {
+  Object.keys(swrMem).forEach(k => delete swrMem[k]);
+  try { Object.keys(sessionStorage).forEach(k => { if (k.indexOf(SWR_PREFIX) === 0) sessionStorage.removeItem(k); }); } catch (e) { /* abaikan */ }
+}
+function swrStaleAll() { swrEpoch = Date.now(); }
+
+/**
+ * Stale-While-Revalidate.
+ *  1) bila ada data tersimpan -> render SEKARANG (tanpa spinner)
+ *  2) bila data masih segar (< maxAge & belum ada tulis sesudahnya) -> selesai, tanpa ke server
+ *  3) selain itu ambil dari server; render ulang HANYA bila isinya berubah
+ */
+function swr(key, fnName, args, render, onFail, opts) {
+  opts = opts || {};
+  const maxAge = opts.maxAge != null ? opts.maxAge : 20000;
+  const hit = swrRead(key);
+  const seq = swrSeq[key] = (swrSeq[key] || 0) + 1;
+  let shown = false;
+  if (hit && hit.res) {
+    try { render(hit.res, true); shown = true; } catch (e) { console.error(e); }
+    if (hit.t > swrEpoch && (Date.now() - hit.t) < maxAge) return;
+  } else if (opts.loadingId) {
+    showLoading(opts.loadingId);
+  }
+  const runner = GAS.run
+    .withSuccessHandler(res => {
+      if (!res || !res.success) { if (seq === swrSeq[key] && !shown && onFail) onFail((res && res.message) || 'Gagal memuat data.'); return; }
+      const h = hashStr(JSON.stringify(res.data));
+      if (hit && hit.h === h) { swrMem[key] = { t: Date.now(), h: h, res: hit.res }; return; }   // sama: tak perlu render ulang
+      swrWrite(key, res, h);                           // cache selalu diperbarui
+      if (seq === swrSeq[key]) render(res, false);     // render hanya untuk permintaan terbaru
+
+    })
+    .withFailureHandler(err => {
+      if (seq !== swrSeq[key]) return;
+      if (!shown) { if (onFail) onFail(err.message); }
+      else showToast('Koneksi lambat', 'Menampilkan data tersimpan. ' + err.message, 'warning');
+    });
+  runner[fnName].apply(null, args);
+}
+
+/** Dipanggil api.js setelah aksi TULIS berhasil. */
+function apiAfterWrite(action, args) {
+  swrStaleAll();   // dashboard/laporan: tampil dulu yang lama, lalu diperbarui di latar belakang
+  if (/Transaksi/.test(action)) { swrDrop('trx:'); swrDrop('det:'); }
+  if (action === 'addProdukCepat') { swrDrop('produk'); swrDrop('katalog'); }
+  if (action === 'saveSettings') swrDrop('cfg');
+  if (action === 'addRecord' || action === 'updateRecord' || action === 'deleteRecord') {
+    const sh = args && args[0];
+    if (sh === 'Produk') { swrDrop('produk'); swrDrop('katalog'); }
+    if (sh === 'Kasir') swrDrop('kasirUser');
+    if (sh === 'Periode_Feslit') { swrDrop('periode'); swrDrop('trx:'); }
+  }
+}
+
+/** Isi cache dari respons login (opt-in 'boot') agar setelah login tidak ada request lagi. */
+function seedDariBoot(b) {
+  try {
+    if (b.periode && b.periode.success) swrWrite('periode', b.periode, hashStr(JSON.stringify(b.periode.data)));
+    if (b.produk && b.produk.success) swrWrite('produk', b.produk, hashStr(JSON.stringify(b.produk.data)));
+    if (b.dash && b.dash.success) swrWrite('dash:', b.dash, hashStr(JSON.stringify(b.dash.data)));
+  } catch (e) { /* cadangan: muat normal */ }
+}
+
+/** Menu sekunder dimuat saat browser menganggur -> Transaksi, Keuangan, Laporan terbuka instan. Digabung jadi 1 eksekusi (batch). */
+function prefetchMenuSekunder() {
+  const jalan = () => {
+    if (!currentUser) return;
+    swr('trx:all', 'getRiwayatTransaksi', [{}], () => {}, null, { maxAge: 30000 });
+    const f = { tanggalMulai: '', tanggalSelesai: '' };
+    swr('lap:' + JSON.stringify(f), 'getLaporanData', [f], () => {}, null, { maxAge: 30000 });
+  };
+  (window.requestIdleCallback ? window.requestIdleCallback(jalan, { timeout: 2500 }) : setTimeout(jalan, 1500));
+}
+
+/** Tombol "Segarkan Data": ambil ulang dari Sheets (berguna bila data diedit langsung di spreadsheet). */
+function segarkanHalaman() {
+  const aktif = document.querySelector('.content-section.active');
+  if (!aktif) return;
+  const id = aktif.id.replace('section-', '');
+  swrPurge();
+  GAS_STATE.nextFresh = true;
+  showToast('Menyegarkan', 'Mengambil data terbaru dari server...', 'info');
+  if (id === 'kasir') muatProdukKeCache();   // jangan menyentuh keranjang yang sedang berjalan
+  else navigateTo(id);
+}
+
+// ── Produk: indeks pencarian & grid ringan ──
+let produkIndex = {}, produkIsbnMap = {}, produkIdLower = {}, produkHay = [];
+let produkFiltered = [], produkShown = 0;
+const PRODUK_PAGE = 60;
+
+function setProdukCache(list) {
+  produkCache = list;
+  produkIndex = {}; produkIsbnMap = {}; produkIdLower = {};
+  produkHay = list.map(p => {
+    produkIndex[p.id_produk] = p;
+    const d = String(p.ISBN || '').replace(/[^0-9]/g, '');
+    if (d.length >= 8) produkIsbnMap[d] = p;
+    produkIdLower[String(p.id_produk || '').toLowerCase()] = p;
+    return (String(p.Judul) + ' ' + p.ISBN + ' ' + p.Penerbit).toLowerCase();
+  });
+}
+
+function jalankanCariProduk() {
+  const el = document.getElementById('produkSearchInput');
+  const kw = (el ? el.value : '').trim().toLowerCase();
+  if (!kw) { produkFiltered = produkCache; }
+  else {
+    const terms = kw.split(/\s+/);
+    produkFiltered = produkCache.filter((p, i) => terms.every(t => produkHay[i].indexOf(t) > -1));
+  }
+  renderProdukGrid(produkFiltered);
+}
+
+function onProdukGridClick(e) {
+  const card = e.target.closest('.produk-card');
+  if (!card) return;
+  if (card.dataset.add) { openTambahProdukCepat(); return; }
+  if (card.dataset.more) { renderProdukGrid(produkFiltered, produkShown + PRODUK_PAGE); return; }
+  const p = produkIndex[card.dataset.id];
+  if (!p) return;
+  card.classList.add('tap'); setTimeout(() => card.classList.remove('tap'), 120);
+  tambahKeKeranjang(p);
+}
+
+// ── Checkout optimistis ──
+let sedangSimpan = false;
+
+function setCheckoutBusy(busy) {
+  const btn = document.getElementById('btnCheckout');
+  if (!btn) return;
+  btn.disabled = busy;
+  btn.innerHTML = busy ? '<span class="spinner-inline"></span> Menyimpan...' : '<i class="bi bi-check-circle"></i> Simpan & Cetak Struk';
+}
+
+/** Hitung struk di browser dengan rumus yang sama seperti server (untuk tampilan langsung). */
+function hitungStrukLokal(payload) {
+  let asli = 0, netto = 0;
+  payload.items.forEach(i => { asli += Math.round(Number(i.HargaAsli)) * Number(i.qty); netto += Math.round(Number(i.Harga)) * Number(i.qty); });
+  asli = Math.round(asli); netto = Math.round(netto);
+  const nominalDiskon = asli - netto;
+  const jumlahBayar = Math.round(Number(payload.jumlahBayar) || netto);
+  return {
+    _pending: true, idTransaksi: '', tanggal: new Date().toISOString(), totalHarga: asli,
+    diskonPersen: asli > 0 ? Math.round(nominalDiskon / asli * 10000) / 100 : 0, nominalDiskon: nominalDiskon,
+    netto: netto, pembayaran: payload.pembayaran, jumlahBayar: jumlahBayar, kembalian: jumlahBayar - netto,
+    kasirNama: payload.kasirNama, items: payload.items
+  };
+}
+
+function tampilkanStrukGagal(pesan) {
+  const content = document.getElementById('previewContent');
+  if (content) content.innerHTML = `<div class="alert alert-danger mb-0"><strong>Transaksi belum tersimpan.</strong><div class="small mt-1">${esc(pesan)}</div><div class="small mt-2">Keranjang Anda masih utuh. Tutup jendela ini lalu coba lagi.</div></div>`;
+  const pb = document.getElementById('btnCetakStruk'); if (pb) pb.disabled = true;
+  document.getElementById('previewModalTitle').textContent = 'Gagal Menyimpan';
+}
+
+// ── Katalog / Transaksi: data penuh di memori, filter lokal, tampil bertahap ──
+let katalogData = [], katalogFiltered = [], katalogShown = 0, katalogTimer = null;
+const KATALOG_PAGE = 100;
+let trxData = [], trxFiltered = [], trxShown = 0, trxTimer = null;
+const TRX_PAGE = 100;
+let laporanTimer = null;
+
+function filterKatalogLokal() { clearTimeout(katalogTimer); katalogTimer = setTimeout(terapkanFilterKatalog, 120); }
+function terapkanFilterKatalog() {
+  const el = document.getElementById('katalogSearchInput');
+  const terms = (el ? el.value : '').trim().toLowerCase().split(/\s+/).filter(Boolean);
+  katalogFiltered = !terms.length ? katalogData : katalogData.filter(p => {
+    const h = (p.Judul + ' ' + p.ISBN + ' ' + p.Penerbit).toLowerCase();
+    return terms.every(t => h.indexOf(t) > -1);
+  });
+  renderKatalogTable(katalogFiltered, KATALOG_PAGE);
+}
+function tampilkanLebihKatalog() { renderKatalogTable(katalogFiltered, katalogShown + KATALOG_PAGE); }
+function editProdukIdx(i) { if (katalogFiltered[i]) editProduk(katalogFiltered[i]); }
+
+function filterTransaksiLokal(segera) {
+  clearTimeout(trxTimer);
+  if (segera === true) return terapkanFilterTrx();
+  trxTimer = setTimeout(terapkanFilterTrx, 150);
+}
+function terapkanFilterTrx() {
+  const v = id => { const el = document.getElementById(id); return el ? el.value : ''; };
+  const kw = v('trxSearchInput').trim().toLowerCase(), bayar = v('trxPembayaranFilter');
+  const mulai = v('trxTanggalMulai') ? new Date(v('trxTanggalMulai') + 'T00:00:00') : null;
+  const selesai = v('trxTanggalSelesai') ? new Date(v('trxTanggalSelesai') + 'T23:59:59') : null;
+  trxFiltered = trxData.filter(t => {
+    if (kw && String(t.id_transaksi).toLowerCase().indexOf(kw) < 0) return false;
+    if (bayar && t.Pembayaran !== bayar) return false;
+    if (mulai || selesai) { const d = new Date(t.Tanggal); if (mulai && d < mulai) return false; if (selesai && d > selesai) return false; }
+    return true;
+  });
+  renderTransaksiTable(trxFiltered, TRX_PAGE);
+}
+function tampilkanLebihTrx() { renderTransaksiTable(trxFiltered, trxShown + TRX_PAGE); }
+function editTrxIdx(i) { if (trxFiltered[i]) openEditTransaksi(trxFiltered[i]); }
+
+function muatLaporanDebounce() { clearTimeout(laporanTimer); laporanTimer = setTimeout(loadLaporanData, 250); }
+
+/**
+ * Bootstrap mengabaikan hide() bila modal sedang bertransisi. Bila kasir menekan "Tutup" tepat saat
+ * modal baru muncul (mis. gagal-simpan datang cepat), layar bisa terkunci. Ulangi hide() setelah transisi.
+ */
+document.addEventListener('click', function (e) {
+  const b = e.target.closest && e.target.closest('[data-bs-dismiss="modal"]');
+  if (!b) return;
+  const m = b.closest('.modal');
+  if (!m) return;
+  setTimeout(function () {
+    if (m.classList.contains('show')) { const inst = bootstrap.Modal.getInstance(m); if (inst) inst.hide(); }
+  }, 450);
+});

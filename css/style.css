@@ -448,3 +448,28 @@ body.role-kasir .admin-only { display: none !important; }
   .login-shade { background: linear-gradient(180deg, rgba(8, 24, 58, 0.82), rgba(10, 34, 82, 0.7)); }
 }
 [data-theme="dark"] .login-card { background: #16202f; }
+
+
+/* ════════════════════════════════════════════════════════
+   v3 TURBO — respons visual instan
+   ════════════════════════════════════════════════════════ */
+#topProgress { position: fixed; top: 0; left: 0; height: 3px; width: 0; opacity: 0; z-index: 3000; pointer-events: none;
+  background: linear-gradient(90deg, var(--accent), #e8a23a); box-shadow: 0 0 8px rgba(232, 162, 58, 0.5); }
+#topProgress.on { opacity: 1; width: 78%; transition: width 9s cubic-bezier(0.1, 0.7, 0.2, 1); }
+#topProgress.done { width: 100%; opacity: 0; transition: width 0.15s ease-out, opacity 0.35s ease 0.15s; }
+
+/* Hilangkan jeda 300 ms ketuk di layar sentuh dan beri umpan balik tekan seketika */
+button, .btn, a, .produk-card, .nav-link, .qty-control button, input, select { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+.btn:active:not(:disabled) { transform: translateY(1px); }
+.produk-card { contain: layout paint; transition: transform 0.08s ease, box-shadow 0.15s ease; }
+.produk-card.tap, .produk-card:active { transform: scale(0.96); }
+.table-responsive { contain: content; }
+.content-section { animation: none; }
+.pending-dots::after { content: '...'; display: inline-block; width: 1.2em; text-align: left; animation: pendingDots 1s steps(4, end) infinite; }
+@keyframes pendingDots { 0% { clip-path: inset(0 100% 0 0); } 100% { clip-path: inset(0 0 0 0); } }
+.btn:disabled { cursor: progress; }
+/* Animasi modal singkat: terasa instan dan jendela transisi (saat klik diabaikan) menyempit */
+.modal.fade .modal-dialog { transition: transform 0.12s ease-out; }
+.fade { transition: opacity 0.12s linear; }
+.modal-backdrop.fade { transition: opacity 0.1s linear; }
+@media (prefers-reduced-motion: reduce) { * { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; } }

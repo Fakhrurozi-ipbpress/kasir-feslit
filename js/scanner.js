@@ -37,12 +37,10 @@ function hanyaDigit(teks) {
  * Cocokkan kode hasil scan ke produk: ISBN (abaikan strip/spasi) atau id_produk.
  */
 function cariProdukDariKode(kode) {
+  // v3: pencarian O(1) lewat indeks (dibangun di setProdukCache), bukan menyisir ribuan produk
   const mentah = normalisasiKode(kode).toLowerCase();
   const digit = hanyaDigit(kode);
-  return produkCache.find(p =>
-    (digit.length >= 8 && hanyaDigit(p.ISBN) === digit) ||
-    String(p.id_produk || '').toLowerCase() === mentah
-  );
+  return (digit.length >= 8 && produkIsbnMap[digit]) || produkIdLower[mentah] || null;
 }
 
 /** Titik masuk tunggal untuk semua sumber scan. Mengembalikan true bila produk ditemukan. */
@@ -80,7 +78,7 @@ function handleSearchEnter(event) {
     const ketemu = handleScanResult(nilai);
     if (!ketemu) tawarkanTambahProdukBaru(nilai);
     input.value = '';
-    handleProdukSearch();
+    handleProdukSearch(true);
   }
 }
 
